@@ -338,6 +338,10 @@ class UndoStack {
       }
     }
   }
+
+  public setInitialMarks(marks: IMark[]): void {
+    this.initialMarks = [...marks];
+  }
 }
 
 class ChangeList {
@@ -403,12 +407,138 @@ export class HistoryTracker {
 
   private readonly vimState: VimState;
 
+  // Marks loaded from disk, keyed by document URI string (works for both local and remote)
+  private static pendingLocalMarks = new Map<string, ILocalMark[]>();
+
+  private static readonly MARKS_FILE_VERSION = '1.0';
+
   constructor(vimState: VimState) {
     this.vimState = vimState;
     this.previousDocumentState = {
       text: this.getDocumentText(),
       versionNumber: this.getDocumentVersion(),
     };
+    // Restore local marks that were loaded from disk
+    const docUri = vimState.editor?.document.uri.toString();
+    if (docUri) {
+      const pending = HistoryTracker.pendingLocalMarks.get(docUri);
+      if (pending) {
+        this.undoStack.setInitialMarks(pending);
+        HistoryTracker.pendingLocalMarks.delete(docUri);
+      }
+    }
+  }
+
+  private static getMarksFileUri(): vscode.Uri | undefined {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return undefined;
+    }
+    return vscode.Uri.joinPath(folders[0].uri, '.vscode', 'vim-marks.json');
+  }
+
+  public static async saveMarksToDisk(
+    localMarksPerFile: Array<{ uri: string; marks: readonly ILocalMark[] }>,
+  ): Promise<void> {
+    const marksUri = HistoryTracker.getMarksFileUri();
+    if (!marksUri) {
+      return;
+    }
+
+    const globalMarks = HistoryStep.globalMarks.map((mark) => ({
+      name: mark.name,
+      uri: mark.document.uri.toString(),
+      line: mark.position.line,
+      character: mark.position.character,
+    }));
+
+    const localMarks = localMarksPerFile.flatMap(({ uri, marks }) =>
+      marks.map((mark) => ({
+        uri,
+        name: mark.name,
+        line: mark.position.line,
+        character: mark.position.character,
+      })),
+    );
+
+    const data = {
+      version: HistoryTracker.MARKS_FILE_VERSION,
+      globalMarks,
+      localMarks,
+    };
+
+    const vscodeDirUri = vscode.Uri.joinPath(marksUri, '..');
+    try {
+      await vscode.workspace.fs.createDirectory(vscodeDirUri);
+    } catch {
+      // already exists
+    }
+    await vscode.workspace.fs.writeFile(
+      marksUri,
+      Buffer.from(JSON.stringify(data, null, 2), 'utf8'),
+    );
+  }
+
+  public static async loadMarksFromDisk(): Promise<void> {
+    const marksUri = HistoryTracker.getMarksFileUri();
+    if (!marksUri) {
+      return;
+    }
+
+    let raw: Uint8Array;
+    try {
+      raw = await vscode.workspace.fs.readFile(marksUri);
+    } catch {
+      return; // file doesn't exist yet
+    }
+
+    let data: {
+      version: string;
+      globalMarks: Array<{ name: string; uri: string; line: number; character: number }>;
+      localMarks: Array<{ uri: string; name: string; line: number; character: number }>;
+    };
+
+    try {
+      data = JSON.parse(Buffer.from(raw).toString('utf8')) as typeof data;
+      if (data.version !== HistoryTracker.MARKS_FILE_VERSION) {
+        return;
+      }
+    } catch {
+      return;
+    }
+
+    // Restore global marks (A-Z)
+    for (const gm of data.globalMarks) {
+      try {
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(gm.uri));
+        const mark: IGlobalMark = {
+          name: gm.name,
+          position: new Position(gm.line, gm.character),
+          isUppercaseMark: true,
+          document,
+        };
+        const idx = HistoryStep.globalMarks.findIndex((m) => m.name === gm.name);
+        if (idx !== -1) {
+          HistoryStep.globalMarks[idx] = mark;
+        } else {
+          HistoryStep.globalMarks.push(mark);
+        }
+      } catch {
+        // file no longer exists, skip
+      }
+    }
+
+    // Queue local marks (a-z) for injection when the file's HistoryTracker is created
+    HistoryTracker.pendingLocalMarks.clear();
+    for (const lm of data.localMarks) {
+      const list = HistoryTracker.pendingLocalMarks.get(lm.uri) ?? [];
+      list.push({
+        name: lm.name,
+        position: new Position(lm.line, lm.character),
+        isUppercaseMark: false,
+      });
+      HistoryTracker.pendingLocalMarks.set(lm.uri, list);
+    }
   }
 
   private getDocumentText(): string {

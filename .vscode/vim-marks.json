@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "globalMarks": [
+    {
+      "name": "L",
+      "uri": "file:///home/bst/code/Vim/LICENSE",
+      "line": 6,
+      "character": 34
+    }
+  ],
+  "localMarks": []
+}

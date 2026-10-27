@@ -25,10 +25,25 @@ import {
 } from './extensionBase';
 import { vimrc } from './src/configuration/vimrc';
 import { Globals } from './src/globals';
+import { HistoryTracker } from './src/history/historyTracker';
+import { ModeHandlerMap } from './src/mode/modeHandlerMap';
 import { Register } from './src/register/register';
 import { Logger } from './src/util/logger';
 
 export { getAndUpdateModeHandler } from './extensionBase';
+
+function collectAndSaveMarks() {
+  const localMarksPerFile = [];
+  for (const [, modeHandler] of ModeHandlerMap.entries()) {
+    localMarksPerFile.push({
+      uri: modeHandler.vimState.document.uri.toString(),
+      marks: modeHandler.vimState.historyTracker.getLocalMarks(),
+    });
+  }
+  return HistoryTracker.saveMarksToDisk(localMarksPerFile).catch((e) => {
+    Logger.warn(`Failed to save marks: ${e}`);
+  });
+}
 
 export async function activate(context: vscode.ExtensionContext) {
   // Set the storage path to be used by history files
@@ -41,6 +56,13 @@ export async function activate(context: vscode.ExtensionContext) {
       await loadConfiguration();
       Logger.info('Sourced new .vimrc');
     }
+    // Save marks whenever any file is saved
+    await collectAndSaveMarks();
+  });
+
+  // Also save marks when switching editors
+  registerEventListener(context, vscode.window.onDidChangeActiveTextEditor, async () => {
+    await collectAndSaveMarks();
   });
 
   registerCommand(
@@ -60,4 +82,5 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export async function deactivate() {
   await Register.saveToDisk(true);
+  await collectAndSaveMarks();
 }

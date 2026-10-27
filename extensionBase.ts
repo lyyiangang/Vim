@@ -7,6 +7,7 @@ import { Globals } from './src/globals';
 import { Jump } from './src/jumps/jump';
 import { Mode } from './src/mode/mode';
 import { ModeHandler } from './src/mode/modeHandler';
+import { HistoryTracker } from './src/history/historyTracker';
 import { ModeHandlerMap } from './src/mode/modeHandlerMap';
 import { Register } from './src/register/register';
 import { CompositionState } from './src/state/compositionState';
@@ -108,7 +109,11 @@ export async function activate(context: vscode.ExtensionContext, handleLocal: bo
 
   // Load state
   Register.loadFromDisk(handleLocal);
-  await Promise.all([ExCommandLine.loadHistory(context), SearchCommandLine.loadHistory(context)]);
+  await Promise.all([
+    ExCommandLine.loadHistory(context),
+    SearchCommandLine.loadHistory(context),
+    HistoryTracker.loadMarksFromDisk(),
+  ]);
 
   const document = vscode.window.activeTextEditor?.document;
   if (document) {
